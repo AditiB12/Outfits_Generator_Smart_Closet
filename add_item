@@ -1,0 +1,271 @@
+import { Text, View, TouchableOpacity, StyleSheet, Image, ActivityIndicator, Alert } from "react-native";
+import { useRouter } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
+import { useState } from "react";
+
+// !! CHANGE THIS to your backend server's IP address and port
+const API_BASE = "http://10.193.232.8:5000";
+// const API_BASE = "http://192.168.10.2:5000";
+
+
+export default function AddItem() {
+    const router = useRouter();
+
+    // these are like variables that make the screen update when they change
+    const [photoBase64, setPhotoBase64] = useState(null); // stores base64 string (for sending)
+    const [photo, setPhoto] = useState(null);       // stores the photo uri
+    const [result, setResult] = useState(null);     // stores { category, color, image_path }
+    const [loading, setLoading] = useState(false);  // shows spinner when true
+    const [step, setStep] = useState("idle");       // tracks where we are in the flow
+
+    const takePhoto = async () => {
+        // ask for camera permission
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== "granted") {
+            Alert.alert("Permission needed", "Please allow camera access.");
+            return;
+        }
+
+        // open the camera
+        const picked = await ImagePicker.launchCameraAsync({
+            quality: 0.7, // compress a bit so it's not too large to send
+            base64: true,
+        });
+
+        if (!picked.canceled) {
+            setPhoto(picked.assets[0].uri); // save the photo path
+            setPhotoBase64(picked.assets[0].base64);  // ← add this
+            setResult(null);
+            setStep("preview");             // move to next step
+        }
+    };
+
+    const pickFromLibrary = async () => {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== "granted") {
+            Alert.alert("Permission needed", "Please allow photo library access.");
+            return;
+        }
+
+        const picked = await ImagePicker.launchImageLibraryAsync({
+            quality: 0.7,
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            base64: true,
+        });
+
+        if (!picked.canceled) {
+            setPhoto(picked.assets[0].uri);
+            setPhotoBase64(picked.assets[0].base64);  // ← add this
+            setResult(null);
+            setStep("preview");
+        }
+    };
+
+  const classifyPhoto = async () => {
+    setLoading(true);
+
+    try {
+      // send to your backend
+      const response = await fetch(`${API_BASE}/classify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: photoBase64 }),
+      });
+
+      if (!response.ok) throw new Error("Server error: " + response.status);
+
+      const data = await response.json(); // { category, color, image_path }
+      setResult(data);
+      setStep("classified");
+
+    } catch (err) {
+      Alert.alert("Classification failed", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveItem = async () => {
+    setLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/inventory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          category:   result.category,
+          color:      result.color,
+          image_path: result.image_path,
+        }),
+      });
+
+      if (!response.ok) throw new Error("Server error: " + response.status);
+
+      // go back to the inventory screen
+      router.back();
+
+    } catch (err) {
+      Alert.alert("Save failed", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+
+      {/* Title */}
+      <Text style={styles.title}>Add Item</Text>
+
+      {/* Photo preview box */}
+      <View style={styles.photoBox}>
+        {photo ? (
+          <Image source={{ uri: photo }} style={styles.photo} />
+        ) : (
+          <Text style={styles.photoPlaceholder}>📷 No photo yet</Text>
+        )}
+      </View>
+
+      {/* Show classification result once we have it */}
+      {result && (
+        <View style={styles.resultBox}>
+          <Text style={styles.resultText}>Category: {result.category}</Text>
+          <Text style={styles.resultText}>Color: {result.color}</Text>
+        </View>
+      )}
+
+      {/* Loading spinner */}
+      {loading && <ActivityIndicator size="large" color="#000" style={{ marginTop: 16 }} />}
+
+      {/* Buttons — change based on which step we're on */}
+      <View style={styles.buttons}>
+
+        {/* idle: just show Take Photo */}
+        {step === "idle" && (
+        <>
+          <TouchableOpacity style={styles.primaryBtn} onPress={takePhoto}>
+            <Text style={styles.primaryBtnText}>📷  Take Photo</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.secondaryBtn} onPress={pickFromLibrary}>
+            <Text style={styles.secondaryBtnText}>🖼️  Choose from Library</Text>
+          </TouchableOpacity>
+        </>
+        )}
+
+        {/* preview: show Classify and Retake */}
+        {step === "preview" && (
+          <>
+            <TouchableOpacity style={styles.primaryBtn} onPress={classifyPhoto} disabled={loading}>
+              <Text style={styles.primaryBtnText}>🔍  Classify Item</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={takePhoto}>
+              <Text style={styles.secondaryBtnText}>Retake Photo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={pickFromLibrary}>
+              <Text style={styles.secondaryBtnText}>🖼️  Choose from Library</Text>
+            </TouchableOpacity>
+          </>
+        )}
+
+        {/* classified: show Save and Start Over */}
+        {step === "classified" && (
+          <>
+            <TouchableOpacity style={styles.primaryBtn} onPress={saveItem} disabled={loading}>
+              <Text style={styles.primaryBtnText}>✓  Save to Wardrobe</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => { setPhoto(null); setPhotoBase64(null); setResult(null); setStep("idle"); }}>
+              <Text style={styles.secondaryBtnText}>Start Over</Text>
+            </TouchableOpacity>
+          </>
+        )}
+
+        {/* Always show a back button */}
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Text style={styles.backBtnText}>← Back</Text>
+        </TouchableOpacity>
+
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    alignItems: "center",
+    backgroundColor: "#fff",
+    padding: 24,
+    paddingTop: 60,
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: "bold",
+    marginBottom: 24,
+  },
+  photoBox: {
+    width: "100%",
+    height: 300,
+    backgroundColor: "#f0f0f0",
+    borderRadius: 16,
+    justifyContent: "center",
+    alignItems: "center",
+    overflow: "hidden",
+    marginBottom: 20,
+  },
+  photo: {
+    width: "100%",
+    height: "100%",
+  },
+  photoPlaceholder: {
+    fontSize: 18,
+    color: "#999",
+  },
+  resultBox: {
+    backgroundColor: "#f0f0f0",
+    borderRadius: 12,
+    padding: 16,
+    width: "100%",
+    marginBottom: 16,
+    gap: 6,
+  },
+  resultText: {
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  buttons: {
+    width: "100%",
+    gap: 12,
+    marginTop: 8,
+  },
+  primaryBtn: {
+    backgroundColor: "#000",
+    padding: 16,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  primaryBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  secondaryBtn: {
+    borderWidth: 1,
+    borderColor: "#000",
+    padding: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  secondaryBtnText: {
+    color: "#000",
+    fontSize: 15,
+  },
+  backBtn: {
+    padding: 14,
+    alignItems: "center",
+  },
+  backBtnText: {
+    color: "#666",
+    fontSize: 15,
+  },
+});
