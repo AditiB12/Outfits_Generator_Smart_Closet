@@ -1,0 +1,156 @@
+import { Text, View, TouchableOpacity, StyleSheet, Image, ActivityIndicator, Alert } from "react-native";
+import * as FileSystem from "expo-file-system/legacy";
+import { useState } from "react";
+
+// const API_BASE = "http://10.193.232.8:5000";
+const API_BASE = "http://192.168.10.2:5000";
+
+const getImageBase64 = async (path) => {
+  const filename = path.replace(/\//g, "_");
+  const localUri = FileSystem.cacheDirectory + filename;
+  await FileSystem.downloadAsync(`${API_BASE}/image/${path}`, localUri);
+
+  let base64 = await FileSystem.readAsStringAsync(localUri, {
+    encoding: "base64",
+  });
+
+  if (base64.includes(",")) {
+    base64 = base64.split(",")[1];
+  }
+
+  console.log(`[${path}] base64 length:`, base64.length);
+  console.log(`[${path}] base64 start:`, base64.substring(0, 30));
+
+  return base64;
+};
+
+export default function TestTryOn() {
+  const [resultImage, setResultImage] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const runTest = async () => {
+    setLoading(true);
+    setResultImage(null);
+
+    try {
+      console.log("Fetching woman.jpg...");
+      const personBase64 = await getImageBase64("img/woman.jpg");
+      console.log("woman.jpg length:", personBase64.length);
+      console.log("woman.jpg starts with:", personBase64.substring(0, 30));
+
+      console.log("Fetching hoodie...");
+      const clothingBase64 = await getImageBase64("img/illinois_hoodie.jpg");
+      console.log("hoodie length:", clothingBase64.length);
+      console.log("hoodie starts with:", clothingBase64.substring(0, 30));
+
+      // verify both are valid JPEG base64 before sending
+      // valid JPEG base64 always starts with /9j/
+      console.log("woman is valid JPEG?", personBase64.startsWith("/9j/"));
+      console.log("hoodie is valid JPEG?", clothingBase64.startsWith("/9j/"));
+
+      console.log("Sending to /try-on...");
+      const response = await fetch(`${API_BASE}/try-on`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          person_image: personBase64,
+          clothing_image: clothingBase64,
+        }),
+      });
+
+      console.log("Response status:", response.status);
+
+      // read raw text first before parsing JSON so we can see error pages
+      const rawText = await response.text();
+      console.log("Raw response (first 200 chars):", rawText.substring(0, 200));
+
+      const data = JSON.parse(rawText);
+      console.log("Response keys:", Object.keys(data));
+
+      if (data.error) throw new Error(data.error);
+
+      setResultImage(`data:image/jpeg;base64,${data.result_image}`);
+      console.log("Success! result_image length:", data.result_image.length);
+
+    } catch (err) {
+      console.log("ERROR:", err.message);
+      Alert.alert("Test failed", err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Try-On Test</Text>
+      <Text style={styles.subtitle}>Sends woman.jpg + hoodie to /try-on</Text>
+
+      <TouchableOpacity style={styles.btn} onPress={runTest} disabled={loading}>
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.btnText}>Run Test</Text>
+        )}
+      </TouchableOpacity>
+
+      {resultImage && (
+        <View style={styles.resultContainer}>
+          <Text style={styles.resultLabel}>Result:</Text>
+          <Image
+            source={{ uri: resultImage }}
+            style={styles.resultImage}
+            resizeMode="contain"
+          />
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#fff",
+    padding: 24,
+    paddingTop: 80,
+    alignItems: "center",
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 32,
+    textAlign: "center",
+  },
+  btn: {
+    backgroundColor: "#000",
+    paddingHorizontal: 40,
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginBottom: 32,
+  },
+  btnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  resultContainer: {
+    width: "100%",
+    alignItems: "center",
+    gap: 8,
+  },
+  resultLabel: {
+    fontSize: 14,
+    color: "#666",
+  },
+  resultImage: {
+    width: "100%",
+    height: 400,
+    borderRadius: 12,
+    backgroundColor: "#f0f0f0",
+  },
+});
