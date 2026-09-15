@@ -1,0 +1,418 @@
+// app/build-outfit.tsx
+import {
+  Text, View, TouchableOpacity, StyleSheet, FlatList, Image,
+  ActivityIndicator, Alert, ScrollView
+} from "react-native";
+import { useRouter, Stack } from "expo-router";
+import { useState, useEffect } from "react";
+import * as FileSystem from "expo-file-system/legacy";
+
+const API_BASE = "http://10.193.232.8:5000";
+// const API_BASE = "http://192.168.10.2:5000";
+
+// same helper as in outfits.tsx — download then read as base64
+const getImageBase64 = async (path) => {
+  const filename = path.replace(/\//g, "_");
+  const localUri = FileSystem.cacheDirectory + filename;
+  await FileSystem.downloadAsync(`${API_BASE}/image/${path}`, localUri);
+
+  let base64 = await FileSystem.readAsStringAsync(localUri, {
+    encoding: "base64",
+  });
+
+  if (base64.includes(",")) {
+    base64 = base64.split(",")[1];
+  }
+  return base64;
+};
+
+export default function BuildOutfit() {
+  const router = useRouter();
+
+  const [items, setItems] = useState([]);                  // all wardrobe items
+  const [selectedIds, setSelectedIds] = useState([]);      // ids of items in the outfit
+  const [tryOnImage, setTryOnImage] = useState(null);      // resulting try-on image
+  const [tryOnLoading, setTryOnLoading] = useState(false);
+
+  // fetch wardrobe on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/inventory`)
+      .then((r) => r.json())
+      .then((data) => setItems(data))
+      .catch((err) => console.log("Failed to load inventory:", err.message));
+  }, []);
+
+  // toggle item in/out of the selection
+  const toggleItem = (id) => {
+    setTryOnImage(null); // clear stale result when selection changes
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  // get full objects for selected items, in selection order
+  const selectedItems = selectedIds
+    .map((id) => items.find((item) => item.id === id))
+    .filter(Boolean);
+
+  // run try-on with all selected items applied in order
+  const handleTryOn = async () => {
+    if (selectedItems.length === 0) {
+      Alert.alert("Pick something first!", "Tap items to add them to your outfit.");
+      return;
+    }
+
+    setTryOnLoading(true);
+    setTryOnImage(null);
+
+    try {
+      // start with the base person image
+      let currentPersonBase64 = await getImageBase64("img/woman.jpg");
+
+      // apply each item one at a time, feeding the result into the next call
+      for (const item of selectedItems) {
+        if (!item.image_path) continue;
+
+        const clothingBase64 = await getImageBase64(item.image_path);
+
+        const response = await fetch(`${API_BASE}/try-on`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            person_image: currentPersonBase64,
+            clothing_image: clothingBase64,
+          }),
+        });
+
+        if (!response.ok) throw new Error("Try-on failed: " + response.status);
+
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+
+        let raw = data.result_image;
+        if (raw.includes(",")) raw = raw.split(",")[1];
+        currentPersonBase64 = raw;
+      }
+
+      setTryOnImage(`data:image/jpeg;base64,${currentPersonBase64}`);
+    } catch (err) {
+      Alert.alert("Try-on failed", err.message);
+    } finally {
+      setTryOnLoading(false);
+    }
+  };
+
+  // render each wardrobe item as a tappable card
+  const renderItem = ({ item }) => {
+    const isSelected = selectedIds.includes(item.id);
+    return (
+      <TouchableOpacity
+        style={[styles.card, isSelected && styles.cardSelected]}
+        onPress={() => toggleItem(item.id)}
+        activeOpacity={0.8}
+      >
+        {item.image_path ? (
+          <Image
+            source={{ uri: `${API_BASE}/image/${item.image_path}` }}
+            style={styles.cardImage}
+          />
+        ) : (
+          <View style={styles.cardImagePlaceholder}>
+            <Text style={{ fontSize: 32 }}>👕</Text>
+          </View>
+        )}
+        <View style={styles.cardInfo}>
+          <Text style={styles.cardCategory}>{item.category}</Text>
+          <Text style={styles.cardColor}>{item.color}</Text>
+        </View>
+
+        {/* checkmark overlay for selected items */}
+        {isSelected && (
+          <View style={styles.selectedBadge}>
+            <Text style={styles.selectedBadgeText}>✓</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+
+        <Text style={styles.title}>Build Your Outfit</Text>
+        <Text style={styles.subtitle}>
+          Tap items to add them to your outfit, then hit Try On.
+        </Text>
+
+        {/* selection summary bar */}
+        {selectedItems.length > 0 && (
+          <View style={styles.selectionBar}>
+            <Text style={styles.selectionLabel}>
+              Your outfit ({selectedItems.length})
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {selectedItems.map((item, i) => (
+                <View key={i} style={styles.selectionChip}>
+                  {item.image_path ? (
+                    <Image
+                      source={{ uri: `${API_BASE}/image/${item.image_path}` }}
+                      style={styles.selectionChipImage}
+                    />
+                  ) : (
+                    <View style={styles.selectionChipPlaceholder}>
+                      <Text>👕</Text>
+                    </View>
+                  )}
+                  <Text style={styles.selectionChipLabel} numberOfLines={1}>
+                    {item.color} {item.category}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity onPress={() => { setSelectedIds([]); setTryOnImage(null); }}>
+              <Text style={styles.clearLink}>Clear all</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* try-on button */}
+        <TouchableOpacity
+          style={[styles.tryOnBtn, selectedItems.length === 0 && styles.tryOnBtnDisabled]}
+          onPress={handleTryOn}
+          disabled={tryOnLoading || selectedItems.length === 0}
+        >
+          {tryOnLoading ? (
+            <View style={styles.tryOnBtnInner}>
+              <ActivityIndicator size="small" color="#fff" />
+              <Text style={styles.tryOnBtnText}>  Generating...</Text>
+            </View>
+          ) : (
+            <Text style={styles.tryOnBtnText}>👗 Try On Outfit</Text>
+          )}
+        </TouchableOpacity>
+
+        {/* try-on result */}
+        {tryOnImage && (
+          <View style={styles.resultContainer}>
+            <Text style={styles.resultLabel}>Try-on result:</Text>
+            <Image
+              source={{ uri: tryOnImage }}
+              style={styles.resultImage}
+              resizeMode="contain"
+            />
+          </View>
+        )}
+
+        {/* wardrobe grid */}
+        <Text style={styles.sectionHeader}>Your Wardrobe</Text>
+
+        {items.length === 0 ? (
+          <Text style={styles.emptyText}>
+            No items yet. Add some from the wardrobe page first!
+          </Text>
+        ) : (
+          <FlatList
+            data={items}
+            renderItem={renderItem}
+            keyExtractor={(item) => item.id.toString()}
+            numColumns={2}
+            columnWrapperStyle={styles.row}
+            scrollEnabled={false}  // ScrollView handles scrolling
+          />
+        )}
+
+        {/* back button at bottom */}
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Text style={styles.backBtnText}>← Back</Text>
+        </TouchableOpacity>
+
+      </ScrollView>
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
+  content: {
+    paddingTop: 60,
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: "bold",
+    marginBottom: 6,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 20,
+  },
+
+  // selection bar
+  selectionBar: {
+    backgroundColor: "#f5f5f5",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    gap: 8,
+  },
+  selectionLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  selectionChip: {
+    width: 64,
+    marginRight: 8,
+    alignItems: "center",
+  },
+  selectionChipImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+  },
+  selectionChipPlaceholder: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: "#e0e0e0",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  selectionChipLabel: {
+    fontSize: 10,
+    color: "#555",
+    textAlign: "center",
+    marginTop: 2,
+    textTransform: "capitalize",
+  },
+  clearLink: {
+    color: "#999",
+    fontSize: 13,
+    textDecorationLine: "underline",
+    alignSelf: "flex-end",
+  },
+
+  // try-on button
+  tryOnBtn: {
+    backgroundColor: "#000",
+    padding: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  tryOnBtnDisabled: {
+    backgroundColor: "#ccc",
+  },
+  tryOnBtnInner: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  tryOnBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+
+  // result
+  resultContainer: {
+    marginBottom: 24,
+    gap: 6,
+  },
+  resultLabel: {
+    fontSize: 13,
+    color: "#666",
+  },
+  resultImage: {
+    width: "100%",
+    height: 400,
+    borderRadius: 12,
+    backgroundColor: "#f0f0f0",
+  },
+
+  // wardrobe grid
+  sectionHeader: {
+    fontSize: 18,
+    fontWeight: "600",
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  row: {
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  card: {
+    width: "48%",
+    backgroundColor: "#f5f5f5",
+    borderRadius: 12,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "transparent",
+  },
+  cardSelected: {
+    borderColor: "#000",
+  },
+  cardImage: {
+    width: "100%",
+    height: 140,
+  },
+  cardImagePlaceholder: {
+    width: "100%",
+    height: 140,
+    backgroundColor: "#e0e0e0",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cardInfo: {
+    padding: 8,
+  },
+  cardCategory: {
+    fontSize: 14,
+    fontWeight: "600",
+    textTransform: "capitalize",
+  },
+  cardColor: {
+    fontSize: 12,
+    color: "#666",
+    textTransform: "capitalize",
+    marginTop: 2,
+  },
+  selectedBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#000",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  selectedBadgeText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+
+  emptyText: {
+    color: "#999",
+    fontSize: 14,
+    textAlign: "center",
+    paddingVertical: 24,
+  },
+
+  backBtn: {
+    padding: 16,
+    alignItems: "center",
+    marginTop: 12,
+  },
+  backBtnText: {
+    color: "#666",
+    fontSize: 15,
+  },
+});
